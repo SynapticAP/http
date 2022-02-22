@@ -23,11 +23,13 @@
 
 #### Change
 
-We follow the response type over the content type header that is returned from the http response if the content type is a JSON.
+1. We follow the response type over the content type header that is returned from the http response if the content type is a JSON.
+2. Upload the dist file
 
 #### Reason
 
-Some of Youreka's Apex endpoints return the content type header as JSON when the actual data returned is of type string.
+1. Some of Youreka's Apex endpoints return the content type header as JSON when the actual data returned is of type string.
+2. The dist file is needed when using npm to install a plugin that is hoted on github and not npm
 
 ## Maintainers
 
