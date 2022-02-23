@@ -1,357 +1,540 @@
-import Capacitor
-import Foundation
+package com.getcapacitor.plugin.http;
 
-/// See https://developer.mozilla.org/en-US/docs/Web/API/XMLHttpRequest/responseType
-fileprivate enum ResponseType: String {
-    case arrayBuffer = "arraybuffer"
-    case blob = "blob"
-    case document = "document"
-    case json = "json"
-    case text = "text"
+import static com.getcapacitor.plugin.http.MimeType.APPLICATION_JSON;
+import static com.getcapacitor.plugin.http.MimeType.APPLICATION_VND_API_JSON;
 
-    static let `default`: ResponseType = .text
+import android.content.Context;
+import android.text.TextUtils;
+import android.util.Base64;
+import com.getcapacitor.JSArray;
+import com.getcapacitor.JSObject;
+import com.getcapacitor.PluginCall;
+import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.MalformedURLException;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.net.URL;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
 
-    init(string: String?) {
-        guard let string = string else {
-            self = .default
-            return
+public class HttpRequestHandler {
+
+    /**
+     * An enum specifying conventional HTTP Response Types
+     * See https://developer.mozilla.org/en-US/docs/Web/API/XMLHttpRequest/responseType
+     */
+    public enum ResponseType {
+        ARRAY_BUFFER("arraybuffer"),
+        BLOB("blob"),
+        DOCUMENT("document"),
+        JSON("json"),
+        TEXT("text");
+
+        private final String name;
+
+        ResponseType(String name) {
+            this.name = name;
         }
 
-        guard let responseType = ResponseType(rawValue: string.lowercased()) else {
-            self = .default
-            return
-        }
+        static final ResponseType DEFAULT = TEXT;
 
-        self = responseType
-    }
-}
-
-/// Helper that safely parses JSON Data. Otherwise returns an error (without throwing)
-/// - Parameters:
-///     - data: The JSON Data to parse
-/// - Returns: The parsed value or an error
-func tryParseJson(_ data: Data) -> Any {
-  do {
-    return try JSONSerialization.jsonObject(with: data, options: .mutableContainers)
-  } catch {
-    return error.localizedDescription
-  }
-}
-
-class HttpRequestHandler {
-    private class CapacitorHttpRequestBuilder {
-        private var url: URL?
-        private var method: String?
-        private var params: [String:String]?
-        private var request: CapacitorUrlRequest?
-
-        /// Set the URL of the HttpRequest
-        /// - Throws: an error of URLError if the urlString cannot be parsed
-        /// - Parameters:
-        ///     - urlString: The URL value to parse
-        /// - Returns: self to continue chaining functions
-        public func setUrl(_ urlString: String) throws -> CapacitorHttpRequestBuilder {
-            guard let u = URL(string: urlString) else {
-                throw URLError(.badURL)
-            }
-            url = u
-            return self
-        }
-
-        public func setMethod(_ method: String) -> CapacitorHttpRequestBuilder {
-            self.method = method;
-            return self
-        }
-
-        public func setUrlParams(_ params: [String:Any]) -> CapacitorHttpRequestBuilder {
-            if (params.count != 0) {
-                var cmps = URLComponents(url: url!, resolvingAgainstBaseURL: true)
-                if cmps?.queryItems == nil {
-                    cmps?.queryItems = []
+        static ResponseType parse(String value) {
+            for (ResponseType responseType : values()) {
+                if (responseType.name.equalsIgnoreCase(value)) {
+                    return responseType;
                 }
+            }
+            return DEFAULT;
+        }
+    }
 
-                var urlSafeParams: [URLQueryItem] = []
-                for (key, value) in params {
-                    if let arr = value as? [String] {
-                        arr.forEach { str in
-                            urlSafeParams.append(URLQueryItem(name: key, value: str))
+    /**
+     * Internal builder class for building a CapacitorHttpUrlConnection
+     */
+    private static class HttpURLConnectionBuilder {
+
+        private Integer connectTimeout;
+        private Integer readTimeout;
+        private Boolean disableRedirects;
+        private JSObject headers;
+        private String method;
+        private URL url;
+
+        private CapacitorHttpUrlConnection connection;
+
+        public HttpURLConnectionBuilder setConnectTimeout(Integer connectTimeout) {
+            this.connectTimeout = connectTimeout;
+            return this;
+        }
+
+        public HttpURLConnectionBuilder setReadTimeout(Integer readTimeout) {
+            this.readTimeout = readTimeout;
+            return this;
+        }
+
+        public HttpURLConnectionBuilder setDisableRedirects(Boolean disableRedirects) {
+            this.disableRedirects = disableRedirects;
+            return this;
+        }
+
+        public HttpURLConnectionBuilder setHeaders(JSObject headers) {
+            this.headers = headers;
+            return this;
+        }
+
+        public HttpURLConnectionBuilder setMethod(String method) {
+            this.method = method;
+            return this;
+        }
+
+        public HttpURLConnectionBuilder setUrl(URL url) {
+            this.url = url;
+            return this;
+        }
+
+        public HttpURLConnectionBuilder openConnection() throws IOException {
+            connection = new CapacitorHttpUrlConnection((HttpURLConnection) url.openConnection());
+
+            connection.setAllowUserInteraction(false);
+            connection.setRequestMethod(method);
+
+            if (connectTimeout != null) connection.setConnectTimeout(connectTimeout);
+            if (readTimeout != null) connection.setReadTimeout(readTimeout);
+            if (disableRedirects != null) connection.setDisableRedirects(disableRedirects);
+
+            connection.setRequestHeaders(headers);
+            return this;
+        }
+
+        public HttpURLConnectionBuilder setUrlParams(JSObject params) throws MalformedURLException, URISyntaxException, JSONException {
+            return this.setUrlParams(params, true);
+        }
+
+        public HttpURLConnectionBuilder setUrlParams(JSObject params, boolean shouldEncode)
+            throws URISyntaxException, MalformedURLException {
+            String initialQuery = url.getQuery();
+            String initialQueryBuilderStr = initialQuery == null ? "" : initialQuery;
+
+            Iterator<String> keys = params.keys();
+
+            if (!keys.hasNext()) {
+                return this;
+            }
+
+            StringBuilder urlQueryBuilder = new StringBuilder(initialQueryBuilderStr);
+
+            // Build the new query string
+            while (keys.hasNext()) {
+                String key = keys.next();
+
+                // Attempt as JSONArray and fallback to string if it fails
+                try {
+                    StringBuilder value = new StringBuilder();
+                    JSONArray arr = params.getJSONArray(key);
+                    for (int x = 0; x < arr.length(); x++) {
+                        value.append(key).append("=").append(arr.getString(x));
+                        if (x != arr.length() - 1) {
+                            value.append("&");
                         }
+                    }
+                    if (urlQueryBuilder.length() > 0) {
+                        urlQueryBuilder.append("&");
+                    }
+                    urlQueryBuilder.append(value);
+                } catch (JSONException e) {
+                    if (urlQueryBuilder.length() > 0) {
+                        urlQueryBuilder.append("&");
+                    }
+                    urlQueryBuilder.append(key).append("=").append(params.getString(key));
+                }
+            }
+
+            String urlQuery = urlQueryBuilder.toString();
+
+            URI uri = url.toURI();
+            if (shouldEncode) {
+                URI encodedUri = new URI(uri.getScheme(), uri.getAuthority(), uri.getPath(), urlQuery, uri.getFragment());
+                this.url = encodedUri.toURL();
+            } else {
+                String unEncodedUrlString =
+                    uri.getScheme() +
+                    "://" +
+                    uri.getAuthority() +
+                    uri.getPath() +
+                    ((!urlQuery.equals("")) ? "?" + urlQuery : "") +
+                    ((uri.getFragment() != null) ? uri.getFragment() : "");
+                this.url = new URL(unEncodedUrlString);
+            }
+
+            return this;
+        }
+
+        public CapacitorHttpUrlConnection build() {
+            return connection;
+        }
+    }
+
+    /**
+     * Builds an HTTP Response given CapacitorHttpUrlConnection and ResponseType objects.
+     *   Defaults to ResponseType.DEFAULT
+     * @param connection The CapacitorHttpUrlConnection to respond with
+     * @throws IOException Thrown if the InputStream is unable to be parsed correctly
+     * @throws JSONException Thrown if the JSON is unable to be parsed
+     */
+    private static JSObject buildResponse(CapacitorHttpUrlConnection connection) throws IOException, JSONException {
+        return buildResponse(connection, ResponseType.DEFAULT);
+    }
+
+    /**
+     * Builds an HTTP Response given CapacitorHttpUrlConnection and ResponseType objects
+     * @param connection The CapacitorHttpUrlConnection to respond with
+     * @param responseType The requested ResponseType
+     * @return A JSObject that contains the HTTPResponse to return to the browser
+     * @throws IOException Thrown if the InputStream is unable to be parsed correctly
+     * @throws JSONException Thrown if the JSON is unable to be parsed
+     */
+    private static JSObject buildResponse(CapacitorHttpUrlConnection connection, ResponseType responseType)
+        throws IOException, JSONException {
+        int statusCode = connection.getResponseCode();
+
+        JSObject output = new JSObject();
+        output.put("status", statusCode);
+        output.put("headers", buildResponseHeaders(connection));
+        output.put("url", connection.getURL());
+        output.put("data", readData(connection, responseType));
+
+        InputStream errorStream = connection.getErrorStream();
+        if (errorStream != null) {
+            output.put("error", true);
+        }
+
+        return output;
+    }
+
+    /**
+     * Read the existing ICapacitorHttpUrlConnection data
+     * @param connection The ICapacitorHttpUrlConnection object to read in
+     * @param responseType The type of HTTP response to return to the API
+     * @return The parsed data from the connection
+     * @throws IOException Thrown if the InputStreams cannot be properly parsed
+     * @throws JSONException Thrown if the JSON is malformed when parsing as JSON
+     */
+    static Object readData(ICapacitorHttpUrlConnection connection, ResponseType responseType) throws IOException, JSONException {
+        InputStream errorStream = connection.getErrorStream();
+        String contentType = connection.getHeaderField("Content-Type");
+
+        if (errorStream != null) {
+            if (isOneOf(contentType, APPLICATION_JSON, APPLICATION_VND_API_JSON)) {
+                return parseJSON(readStreamAsString(errorStream));
+            } else {
+                return readStreamAsString(errorStream);
+            }
+        } else if (contentType != null && contentType.contains(APPLICATION_JSON.getValue())) {
+            // backward compatibility
+            return parseJSON(readStreamAsString(connection.getInputStream()));
+        } else {
+            InputStream stream = connection.getInputStream();
+            switch (responseType) {
+                case ARRAY_BUFFER:
+                case BLOB:
+                    return readStreamAsBase64(stream);
+                case JSON:
+                    return parseJSON(readStreamAsString(stream));
+                case DOCUMENT:
+                case TEXT:
+                default:
+                    return readStreamAsString(stream);
+            }
+        }
+    }
+
+    /**
+     * Helper function for determining if the Content-Type is a typeof an existing Mime-Type
+     * @param contentType The Content-Type string to check for
+     * @param mimeTypes The Mime-Type values to check against
+     * @return
+     */
+    private static boolean isOneOf(String contentType, MimeType... mimeTypes) {
+        if (contentType != null) {
+            for (MimeType mimeType : mimeTypes) {
+                if (contentType.contains(mimeType.getValue())) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Build the JSObject response headers based on the connection header map
+     * @param connection The CapacitorHttpUrlConnection connection
+     * @return A JSObject of the header values from the CapacitorHttpUrlConnection
+     */
+    private static JSObject buildResponseHeaders(CapacitorHttpUrlConnection connection) {
+        JSObject output = new JSObject();
+
+        for (Map.Entry<String, List<String>> entry : connection.getHeaderFields().entrySet()) {
+            String valuesString = TextUtils.join(", ", entry.getValue());
+            output.put(entry.getKey(), valuesString);
+        }
+
+        return output;
+    }
+
+    /**
+     * Returns a JSObject or a JSArray based on a string-ified input
+     * @param input String-ified JSON that needs parsing
+     * @return A JSObject or JSArray
+     * @throws JSONException thrown if the JSON is malformed
+     */
+    private static Object parseJSON(String input) throws JSONException {
+        JSONObject json = new JSONObject();
+        try {
+            if ("null".equals(input.trim())) {
+                return JSONObject.NULL;
+            } else if ("true".equals(input.trim())) {
+                return new JSONObject().put("flag", "true");
+            } else if ("false".equals(input.trim())) {
+                return new JSONObject().put("flag", "false");
+            } else {
+                try {
+                    if (input.charAt(0) == '"') {
+                        String newString = removeFirstAndLast(input).replace("\\\"", "\"");
+                        return new JSObject(newString);
                     } else {
-                        urlSafeParams.append(URLQueryItem(name: key, value: (value as! String)))
+                        return new JSObject(input);
                     }
+                } catch (JSONException e) {
+                    return new JSArray(input);
                 }
-
-                cmps!.queryItems?.append(contentsOf: urlSafeParams)
-                url = cmps!.url!
             }
-            return self
-        }
-
-        public func openConnection() -> CapacitorHttpRequestBuilder {
-            request = CapacitorUrlRequest(url!, method: method!)
-            return self
-        }
-
-        public func build() -> CapacitorUrlRequest {
-            return request!
+        } catch (JSONException e) {
+            return new JSArray(input);
         }
     }
 
-    private static func buildResponse(_ data: Data?, _ response: HTTPURLResponse, responseType: ResponseType = .default) -> [String:Any] {
-        var output = [:] as [String:Any]
+    // Function to remove the first and
+    // the last character of a string
+    public static String removeFirstAndLast(String str) {
+        // Removing first and last character
+        // of a string using substring() method
+        str = str.substring(1, str.length() - 1);
 
-        output["status"] = response.statusCode
-        output["headers"] = response.allHeaderFields
-        output["url"] = response.url?.absoluteString
-
-        guard let data = data else {
-            output["data"] = ""
-            return output
-        }
-
-        let contentType = (response.allHeaderFields["Content-Type"] as? String ?? "application/default").lowercased();
-
-        if ((contentType.contains("application/json") && responseType != .text) || responseType == .json) {
-            output["data"] = tryParseJson(data);
-        } else if (responseType == .arrayBuffer || responseType == .blob) {
-            output["data"] = data.base64EncodedString();
-        } else if (responseType == .document || responseType == .text || responseType == .default) {
-            output["data"] = String(data: data, encoding: .utf8)
-        }
-
-        return output
+        // Return the modified string
+        return str;
     }
 
-    private static func generateMultipartForm(_ url: URL, _ name: String, _ boundary: String, _ body: [String:Any]) throws -> Data {
-        let strings: [String: String] = body.compactMapValues { any in
-            any as? String
+    /**
+     * Returns a string based on a base64 InputStream
+     * @param in The base64 InputStream to convert to a String
+     * @return String value of InputStream
+     * @throws IOException thrown if the InputStream is unable to be read as base64
+     */
+    private static String readStreamAsBase64(InputStream in) throws IOException {
+        try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[1024];
+            int readBytes;
+            while ((readBytes = in.read(buffer)) != -1) {
+                out.write(buffer, 0, readBytes);
+            }
+            byte[] result = out.toByteArray();
+            return Base64.encodeToString(result, 0, result.length, Base64.DEFAULT);
         }
-
-        var data = Data()
-
-        let fileData = try Data(contentsOf: url)
-
-        let fname = url.lastPathComponent
-        let mimeType = FilesystemUtils.mimeTypeForPath(path: fname)
-        data.append("\r\n--\(boundary)\r\n".data(using: .utf8)!)
-        data.append(
-          "Content-Disposition: form-data; name=\"\(name)\"; filename=\"\(fname)\"\r\n".data(
-            using: .utf8)!)
-        data.append("Content-Type: \(mimeType)\r\n\r\n".data(using: .utf8)!)
-        data.append(fileData)
-        strings.forEach { key, value in
-            data.append("\r\n--\(boundary)\r\n".data(using: .utf8)!)
-            data.append("Content-Disposition: form-data; name=\"\(key)\"\r\n\r\n".data(using: .utf8)!)
-            data.append(value.data(using: .utf8)!)
-        }
-        data.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
-
-        return data
     }
 
+    /**
+     * Returns a string based on an InputStream
+     * @param in The InputStream to convert to a String
+     * @return String value of InputStream
+     * @throws IOException thrown if the InputStream is unable to be read
+     */
+    private static String readStreamAsString(InputStream in) throws IOException {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(in))) {
+            StringBuilder builder = new StringBuilder();
+            String line = reader.readLine();
+            while (line != null) {
+                builder.append(line);
+                line = reader.readLine();
+                if (line != null) {
+                    builder.append(System.getProperty("line.separator"));
+                }
+            }
+            return builder.toString();
+        }
+    }
 
-    public static func request(_ call: CAPPluginCall, _ httpMethod: String?) throws {
-        guard let urlString = call.getString("url") else { throw URLError(.badURL) }
-        guard let method = httpMethod ?? call.getString("method") else { throw URLError(.dataNotAllowed) }
+    /**
+     * Makes an Http Request based on the PluginCall parameters
+     * @param call The Capacitor PluginCall that contains the options need for an Http request
+     * @param httpMethod The HTTP method that overrides the PluginCall HTTP method
+     * @throws IOException throws an IO request when a connection can't be made
+     * @throws URISyntaxException thrown when the URI is malformed
+     * @throws JSONException thrown when the incoming JSON is malformed
+     */
+    public static JSObject request(PluginCall call, String httpMethod) throws IOException, URISyntaxException, JSONException {
+        String urlString = call.getString("url", "");
+        JSObject headers = call.getObject("headers");
+        JSObject params = call.getObject("params");
+        Integer connectTimeout = call.getInt("connectTimeout");
+        Integer readTimeout = call.getInt("readTimeout");
+        Boolean disableRedirects = call.getBoolean("disableRedirects");
+        Boolean shouldEncode = call.getBoolean("shouldEncodeUrlParams", true);
+        ResponseType responseType = ResponseType.parse(call.getString("responseType"));
 
-        let headers = (call.getObject("headers") ?? [:]) as! [String: String]
-        let params = (call.getObject("params") ?? [:]) as! [String: Any]
-        let responseType = call.getString("responseType") ?? "text";
-        let connectTimeout = call.getDouble("connectTimeout");
-        let readTimeout = call.getDouble("readTimeout");
+        String method = httpMethod != null ? httpMethod.toUpperCase() : call.getString("method", "").toUpperCase();
 
-        let request = try! CapacitorHttpRequestBuilder()
-            .setUrl(urlString)
+        boolean isHttpMutate = method.equals("DELETE") || method.equals("PATCH") || method.equals("POST") || method.equals("PUT");
+
+        URL url = new URL(urlString);
+        HttpURLConnectionBuilder connectionBuilder = new HttpURLConnectionBuilder()
+            .setUrl(url)
             .setMethod(method)
-            .setUrlParams(params)
-            .openConnection()
-            .build();
+            .setHeaders(headers)
+            .setUrlParams(params, shouldEncode)
+            .setConnectTimeout(connectTimeout)
+            .setReadTimeout(readTimeout)
+            .setDisableRedirects(disableRedirects)
+            .openConnection();
 
-        request.setRequestHeaders(headers)
+        CapacitorHttpUrlConnection connection = connectionBuilder.build();
 
-        // Timeouts in iOS are in seconds. So read the value in millis and divide by 1000
-        let timeout = (connectTimeout ?? readTimeout ?? 600000.0) / 1000.0;
-        request.setTimeout(timeout)
-
-        if let data = call.options["data"] as? JSValue {
-            do {
-                try request.setRequestBody(data)
-            } catch {
-                // Explicitly reject if the http request body was not set successfully,
-                // so as to not send a known malformed request, and to provide the developer with additional context.
-                call.reject("Error", "REQUEST", error, [:])
-                return
+        // Set HTTP body on a non GET or HEAD request
+        if (isHttpMutate) {
+            JSValue data = new JSValue(call, "data");
+            if (data.getValue() != null) {
+                connection.setDoOutput(true);
+                connection.setRequestBody(call, data);
             }
         }
 
-        let urlRequest = request.getUrlRequest();
-        let urlSession = request.getUrlSession(call);
-        let task = urlSession.dataTask(with: urlRequest) { (data, response, error) in
-            urlSession.invalidateAndCancel();
-            if error != nil {
-                return
-            }
+        connection.connect();
 
-            let type = ResponseType(rawValue: responseType) ?? .default
-            call.resolve(self.buildResponse(data, response as! HTTPURLResponse, responseType: type))
-        }
-
-        task.resume();
+        return buildResponse(connection, responseType);
     }
 
-    public static func upload(_ call: CAPPluginCall) throws {
-        let name = call.getString("name") ?? "file"
-        let method = call.getString("method") ?? "POST"
-        let fileDirectory = call.getString("fileDirectory") ?? "DOCUMENTS"
-        let headers = (call.getObject("headers") ?? [:]) as! [String: String]
-        let params = (call.getObject("params") ?? [:]) as! [String: Any]
-        let body = (call.getObject("data") ?? [:]) as [String: Any]
-        let responseType = call.getString("responseType") ?? "text";
-        let connectTimeout = call.getDouble("connectTimeout");
-        let readTimeout = call.getDouble("readTimeout");
+    /**
+     * Makes an Http Request to download a file based on the PluginCall parameters
+     * @param call The Capacitor PluginCall that contains the options need for an Http request
+     * @param context The Android Context required for writing to the filesystem
+     * @param progress The emitter which notifies listeners on downloading progression
+     * @throws IOException throws an IO request when a connection can't be made
+     * @throws URISyntaxException thrown when the URI is malformed
+     */
+    public static JSObject downloadFile(PluginCall call, Context context, ProgressEmitter progress)
+        throws IOException, URISyntaxException, JSONException {
+        String urlString = call.getString("url");
+        String method = call.getString("method", "GET").toUpperCase();
+        String filePath = call.getString("filePath");
+        String fileDirectory = call.getString("fileDirectory", FilesystemUtils.DIRECTORY_DOCUMENTS);
+        JSObject headers = call.getObject("headers");
+        JSObject params = call.getObject("params");
+        Integer connectTimeout = call.getInt("connectTimeout");
+        Integer readTimeout = call.getInt("readTimeout");
 
-        guard let urlString = call.getString("url") else { throw URLError(.badURL) }
-        guard let filePath = call.getString("filePath") else { throw URLError(.badURL) }
-        guard let fileUrl = FilesystemUtils.getFileUrl(filePath, fileDirectory) else { throw URLError(.badURL) }
+        final URL url = new URL(urlString);
+        final File file = FilesystemUtils.getFileObject(context, filePath, fileDirectory);
 
-        let request = try! CapacitorHttpRequestBuilder()
-            .setUrl(urlString)
+        HttpURLConnectionBuilder connectionBuilder = new HttpURLConnectionBuilder()
+            .setUrl(url)
             .setMethod(method)
+            .setHeaders(headers)
             .setUrlParams(params)
-            .openConnection()
-            .build();
+            .setConnectTimeout(connectTimeout)
+            .setReadTimeout(readTimeout)
+            .openConnection();
 
-        request.setRequestHeaders(headers)
+        ICapacitorHttpUrlConnection connection = connectionBuilder.build();
+        InputStream connectionInputStream = connection.getInputStream();
 
-        // Timeouts in iOS are in seconds. So read the value in millis and divide by 1000
-        let timeout = (connectTimeout ?? readTimeout ?? 600000.0) / 1000.0;
-        request.setTimeout(timeout)
+        FileOutputStream fileOutputStream = new FileOutputStream(file, false);
 
-        let boundary = UUID().uuidString
-        request.setContentType("multipart/form-data; boundary=\(boundary)");
+        String contentLength = connection.getHeaderField("content-length");
+        int bytes = 0;
+        int maxBytes = 0;
 
-        guard let form = try? generateMultipartForm(fileUrl, name, boundary, body) else { throw URLError(.cannotCreateFile) }
-
-        let urlRequest = request.getUrlRequest();
-        let task = URLSession.shared.uploadTask(with: urlRequest, from: form) { (data, response, error) in
-            if error != nil {
-                CAPLog.print("Error on upload file", String(describing: data), String(describing: response), String(describing: error))
-                call.reject("Error", "UPLOAD", error, [:])
-                return
-            }
-            let type = ResponseType(rawValue: responseType) ?? .default
-            call.resolve(self.buildResponse(data, response as! HTTPURLResponse, responseType: type))
+        try {
+            maxBytes = contentLength != null ? Integer.parseInt(contentLength) : 0;
+        } catch (NumberFormatException e) {
+            maxBytes = 0;
         }
 
-        task.resume()
+        byte[] buffer = new byte[1024];
+        int len;
+
+        while ((len = connectionInputStream.read(buffer)) > 0) {
+            fileOutputStream.write(buffer, 0, len);
+
+            bytes += len;
+            progress.emit(bytes, maxBytes);
+        }
+
+        connectionInputStream.close();
+        fileOutputStream.close();
+
+        return new JSObject() {
+            {
+                put("path", file.getAbsolutePath());
+            }
+        };
     }
 
-    public static func download(_ call: CAPPluginCall, updateProgress: @escaping ProgressEmitter) throws {
-        let method = call.getString("method") ?? "GET"
-        let fileDirectory = call.getString("fileDirectory") ?? "DOCUMENTS"
-        let headers = (call.getObject("headers") ?? [:]) as! [String: String]
-        let params = (call.getObject("params") ?? [:]) as! [String: Any]
-        let connectTimeout = call.getDouble("connectTimeout");
-        let readTimeout = call.getDouble("readTimeout");
-        let progress = call.getBool("progress") ?? false
+    /**
+     * Makes an Http Request to upload a file based on the PluginCall parameters
+     * @param call The Capacitor PluginCall that contains the options need for an Http request
+     * @param context The Android Context required for writing to the filesystem
+     * @throws IOException throws an IO request when a connection can't be made
+     * @throws URISyntaxException thrown when the URI is malformed
+     * @throws JSONException thrown when malformed JSON is passed into the function
+     */
+    public static JSObject uploadFile(PluginCall call, Context context) throws IOException, URISyntaxException, JSONException {
+        String urlString = call.getString("url");
+        String method = call.getString("method", "POST").toUpperCase();
+        String filePath = call.getString("filePath");
+        String fileDirectory = call.getString("fileDirectory", FilesystemUtils.DIRECTORY_DOCUMENTS);
+        String name = call.getString("name", "file");
+        Integer connectTimeout = call.getInt("connectTimeout");
+        Integer readTimeout = call.getInt("readTimeout");
+        JSObject headers = call.getObject("headers");
+        JSObject params = call.getObject("params");
+        JSObject data = call.getObject("data");
+        ResponseType responseType = ResponseType.parse(call.getString("responseType"));
 
-        guard let urlString = call.getString("url") else { throw URLError(.badURL) }
-        guard let filePath = call.getString("filePath") else { throw URLError(.badURL) }
+        URL url = new URL(urlString);
 
-        let request = try! CapacitorHttpRequestBuilder()
-            .setUrl(urlString)
+        File file = FilesystemUtils.getFileObject(context, filePath, fileDirectory);
+
+        HttpURLConnectionBuilder connectionBuilder = new HttpURLConnectionBuilder()
+            .setUrl(url)
             .setMethod(method)
+            .setHeaders(headers)
             .setUrlParams(params)
-            .openConnection()
-            .build();
+            .setConnectTimeout(connectTimeout)
+            .setReadTimeout(readTimeout)
+            .openConnection();
 
-        request.setRequestHeaders(headers)
+        CapacitorHttpUrlConnection connection = connectionBuilder.build();
+        connection.setDoOutput(true);
 
-        // Timeouts in iOS are in seconds. So read the value in millis and divide by 1000
-        let timeout = (connectTimeout ?? readTimeout ?? 600000.0) / 1000.0;
-        request.setTimeout(timeout)
+        FormUploader builder = new FormUploader(connection.getHttpConnection());
+        builder.addFilePart(name, file, data);
+        builder.finish();
 
-        func handleDownload(downloadLocation: URL?, response: URLResponse?, error: Error?) {
-            if error != nil {
-                CAPLog.print("Error on download file", String(describing: downloadLocation), String(describing: response), String(describing: error))
-                call.reject("Error", "DOWNLOAD", error, [:])
-                return
-            }
-
-            guard let location = downloadLocation else {
-                call.reject("Unable to get file after downloading")
-                return
-            }
-
-            // TODO: Move to abstracted FS operations
-            let fileManager = FileManager.default
-
-            let foundDir = FilesystemUtils.getDirectory(directory: fileDirectory)
-            let dir = fileManager.urls(for: foundDir, in: .userDomainMask).first
-
-            do {
-                let dest = dir!.appendingPathComponent(filePath)
-                print("File Dest", dest.absoluteString)
-
-                try FilesystemUtils.createDirectoryForFile(dest, true)
-
-                try fileManager.moveItem(at: location, to: dest)
-                call.resolve(["path": dest.absoluteString])
-            } catch let e {
-                call.reject("Unable to download file", "DOWNLOAD", e)
-                return
-            }
-
-            CAPLog.print("Downloaded file", location)
-        }
-
-        var session: URLSession!
-        var task: URLSessionDownloadTask!
-        let urlRequest = request.getUrlRequest()
-
-        if progress {
-            class ProgressDelegate : NSObject, URLSessionDataDelegate, URLSessionDownloadDelegate {
-                private var handler: (URL?, URLResponse?, Error?) -> Void;
-                private var downloadLocation: URL?;
-                private var response: URLResponse?;
-                private var emitter: (Int64, Int64) -> Void;
-
-                init(downloadHandler: @escaping (URL?, URLResponse?, Error?) -> Void, progressEmitter: @escaping (Int64, Int64) -> Void) {
-                    handler = downloadHandler
-                    emitter = progressEmitter
-                }
-
-                func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-                    if totalBytesExpectedToWrite > 0 {
-                        emitter(totalBytesWritten, totalBytesExpectedToWrite)
-                    }
-                    else {
-                        emitter(totalBytesWritten, 0)
-                    }
-                }
-
-                func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-                    downloadLocation = location
-                    handler(downloadLocation, downloadTask.response, downloadTask.error)
-                }
-
-                func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-                    if error != nil {
-                        handler(downloadLocation, task.response, error)
-                    }
-                }
-            }
-
-            let progressDelegate = ProgressDelegate(downloadHandler: handleDownload, progressEmitter: updateProgress)
-            session = URLSession(configuration: .default, delegate: progressDelegate, delegateQueue: nil)
-            task = session.downloadTask(with: urlRequest)
-        }
-        else {
-            task = URLSession.shared.downloadTask(with: urlRequest, completionHandler: handleDownload)
-        }
-
-        task.resume()
+        return buildResponse(connection, responseType);
     }
 
-    public typealias ProgressEmitter = (_ bytes: Int64, _ contentLength: Int64) -> Void;
+    @FunctionalInterface
+    public interface ProgressEmitter {
+        void emit(Integer bytes, Integer contentLength);
+    }
 }

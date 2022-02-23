@@ -240,7 +240,7 @@ public class HttpRequestHandler {
             } else {
                 return readStreamAsString(errorStream);
             }
-        } else if (responseType != ResponseType.TEXT && contentType != null && contentType.contains(APPLICATION_JSON.getValue())) {
+        } else if (contentType != null && contentType.contains(APPLICATION_JSON.getValue())) {
             // backward compatibility
             return parseJSON(readStreamAsString(connection.getInputStream()));
         } else {
@@ -309,7 +309,12 @@ public class HttpRequestHandler {
                 return new JSONObject().put("flag", "false");
             } else {
                 try {
-                    return new JSObject(input);
+                    if (input.charAt(0) == '"') {
+                        String newString = removeFirstAndLast(input).replace("\\\"", "\"");
+                        return new JSObject(newString);
+                    } else {
+                        return new JSObject(input);
+                    }
                 } catch (JSONException e) {
                     return new JSArray(input);
                 }
@@ -317,6 +322,17 @@ public class HttpRequestHandler {
         } catch (JSONException e) {
             return new JSArray(input);
         }
+    }
+
+    // Function to remove the first and
+    // the last character of a string
+    public static String removeFirstAndLast(String str) {
+        // Removing first and last character
+        // of a string using substring() method
+        str = str.substring(1, str.length() - 1);
+
+        // Return the modified string
+        return str;
     }
 
     /**
