@@ -23,7 +23,14 @@
 
 #### Change
 
-1. We follow the response type over the content type header that is returned from the http response if the content type is a JSON.
+1. We follow the response type over the content type header that is returned from the http response if the content type is a JSON. If the response type is 'text' while the content type is 'json' we will return a string of a JSON.
+   _Note:_ iOS will return a string where the double quotes have a backslash in front of them like so:
+   ```
+     "
+       \"data\": \"some random data\"
+     "
+   ```
+   while Android will just return the JSON without backslashes in from of the double quotes.
 2. Upload the dist file
 
 #### Reason
