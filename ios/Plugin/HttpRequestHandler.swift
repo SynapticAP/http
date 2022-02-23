@@ -114,7 +114,12 @@ class HttpRequestHandler {
         if ((contentType.contains("application/json") && responseType != .text) || responseType == .json) {
             output["data"] = tryParseJson(data);
         } else if (contentType.contains("application/json") && responseType == .text) {
-            output["data"] = tryParseJson(data);
+            let removedFirstData = data.dropFirst();
+            let removedSecondData = removedFirstData.dropLast()
+            let stringData = String(data: removedSecondData, encoding: .utf8)
+            let replacedString = stringData!.replacingOccurrences(of: "\\\"", with: "\"")
+
+            output["data"] = replacedString
         } else if (responseType == .arrayBuffer || responseType == .blob) {
             output["data"] = data.base64EncodedString();
         } else if (responseType == .document || responseType == .text || responseType == .default) {
