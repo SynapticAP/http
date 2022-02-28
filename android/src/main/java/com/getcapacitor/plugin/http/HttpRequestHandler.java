@@ -308,15 +308,18 @@ public class HttpRequestHandler {
             } else if ("false".equals(input.trim())) {
                 return new JSONObject().put("flag", "false");
             } else {
-                try {
-                    if (input.charAt(0) == '"') {
-                        String newString = removeFirstAndLast(input).replace("\\\"", "\"");
-                        return new JSObject(newString);
+                if (input.charAt(0) == '"') {
+                    String newString = removeFirstAndLast(input).replace("\\\"", "\"");
+                    // If the string is an array of ojects, wrap the array in an object
+                    if (newString.charAt(0) == '[') {
+                        String arrayString = "{\"dataArray\": ".concat(newString);
+                        arrayString = arrayString.concat("}");
+                        return new JSObject(arrayString);
                     } else {
-                        return new JSObject(input);
+                        return new JSObject(newString);
                     }
-                } catch (JSONException e) {
-                    return new JSArray(input);
+                } else {
+                    return new JSObject(input);
                 }
             }
         } catch (JSONException e) {
