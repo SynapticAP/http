@@ -117,7 +117,7 @@ class HttpRequestHandler {
             let removedFirstData = data.dropFirst();
             let removedSecondData = removedFirstData.dropLast()
             let stringData = String(data: removedSecondData, encoding: .utf8)
-            let replacedString = stringData!.replacingOccurrences(of: "\\\"", with: "\"")
+            let replacedString = stringData!.replacingOccurrences(of: "\\\"", with: "\"").replacingOccurrences(of: "\\\\\"", with: "\\\"")
 
             output["data"] = replacedString
         } else if (responseType == .arrayBuffer || responseType == .blob) {
