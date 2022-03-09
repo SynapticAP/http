@@ -127,11 +127,11 @@ public class HttpRequestHandler {
             String initialQueryBuilderStr = initialQuery == null ? "" : initialQuery;
 
             Iterator<String> keys = params.keys();
-            
+
             if (!keys.hasNext()) {
                 return this;
             }
-            
+
             StringBuilder urlQueryBuilder = new StringBuilder(initialQueryBuilderStr);
 
             // Build the new query string
@@ -167,7 +167,13 @@ public class HttpRequestHandler {
                 URI encodedUri = new URI(uri.getScheme(), uri.getAuthority(), uri.getPath(), urlQuery, uri.getFragment());
                 this.url = encodedUri.toURL();
             } else {
-                String unEncodedUrlString = uri.getScheme() + "://" + uri.getAuthority() + uri.getPath() + ((!urlQuery.equals("")) ? "?" + urlQuery : "") + ((uri.getFragment() != null) ? uri.getFragment() : "");
+                String unEncodedUrlString =
+                    uri.getScheme() +
+                    "://" +
+                    uri.getAuthority() +
+                    uri.getPath() +
+                    ((!urlQuery.equals("")) ? "?" + urlQuery : "") +
+                    ((uri.getFragment() != null) ? uri.getFragment() : "");
                 this.url = new URL(unEncodedUrlString);
             }
 
@@ -302,15 +308,35 @@ public class HttpRequestHandler {
             } else if ("false".equals(input.trim())) {
                 return new JSONObject().put("flag", "false");
             } else {
-                try {
+                if (input.charAt(0) == '"') {
+                    // The first replace removes one backslash, and the second one removes an additional backslash for cases like {/"data/": /"string ///"string///" string/"}
+                    String newString = removeFirstAndLast(input).replace("\\\"", "\"").replace("\\\"", "\"");
+                    // If the string is an array of ojects, wrap the array in an object
+                    if (newString.charAt(0) == '[') {
+                        String arrayString = "{\"dataArray\": ".concat(newString);
+                        arrayString = arrayString.concat("}");
+                        return new JSObject(arrayString);
+                    } else {
+                        return new JSObject(newString);
+                    }
+                } else {
                     return new JSObject(input);
-                } catch (JSONException e) {
-                    return new JSArray(input);
                 }
             }
         } catch (JSONException e) {
             return new JSArray(input);
         }
+    }
+
+    // Function to remove the first and
+    // the last character of a string
+    public static String removeFirstAndLast(String str) {
+        // Removing first and last character
+        // of a string using substring() method
+        str = str.substring(1, str.length() - 1);
+
+        // Return the modified string
+        return str;
     }
 
     /**

@@ -17,6 +17,27 @@
 <!-- ALL-CONTRIBUTORS-BADGE:END -->
 </p>
 
+## Youreka Forked Changes
+
+### Response Type
+
+#### Change
+
+1. We follow the response type over the content type header that is returned from the http response if the content type is a JSON. If the response type is 'text' while the content type is 'json' we will return a string of a JSON.
+   _Note:_ iOS will return a string where the double quotes have a backslash in front of them like so:
+   ```
+     "
+       \"data\": \"some random data\"
+     "
+   ```
+   while Android will just return the JSON without backslashes in from of the double quotes.
+2. Upload the dist file
+
+#### Reason
+
+1. Some of Youreka's Apex endpoints return the content type header as JSON when the actual data returned is of type string.
+2. The dist file is needed when using npm to install a plugin that is hoted on github and not npm
+
 ## Maintainers
 
 | Maintainer   | GitHub                                        | Social                                          |
