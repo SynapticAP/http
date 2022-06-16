@@ -235,12 +235,12 @@ public class HttpRequestHandler {
         String contentType = connection.getHeaderField("Content-Type");
 
         if (errorStream != null) {
-            if (isOneOf(contentType, APPLICATION_JSON, APPLICATION_VND_API_JSON)) {
+            if (isOneOf(contentType, APPLICATION_JSON, APPLICATION_VND_API_JSON) && responseType != ResponseType.TEXT) { // MODIFIED
                 return parseJSON(readStreamAsString(errorStream));
             } else {
                 return readStreamAsString(errorStream);
             }
-        } else if (contentType != null && contentType.contains(APPLICATION_JSON.getValue())) {
+        } else if (contentType != null && contentType.contains(APPLICATION_JSON.getValue()) && responseType != ResponseType.TEXT) { // MODIFIED
             // backward compatibility
             return parseJSON(readStreamAsString(connection.getInputStream()));
         } else {
