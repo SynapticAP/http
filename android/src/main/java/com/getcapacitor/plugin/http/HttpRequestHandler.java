@@ -308,19 +308,10 @@ public class HttpRequestHandler {
             } else if ("false".equals(input.trim())) {
                 return new JSONObject().put("flag", "false");
             } else {
-                if (input.charAt(0) == '"') {
-                    // The first replace removes one backslash, and the second one removes an additional backslash for cases like {/"data/": /"string ///"string///" string/"}
-                    String newString = removeFirstAndLast(input).replace("\\\"", "\"").replace("\\\"", "\"");
-                    // If the string is an array of ojects, wrap the array in an object
-                    if (newString.charAt(0) == '[') {
-                        String arrayString = "{\"dataArray\": ".concat(newString);
-                        arrayString = arrayString.concat("}");
-                        return new JSObject(arrayString);
-                    } else {
-                        return new JSObject(newString);
-                    }
-                } else {
+                try {
                     return new JSObject(input);
+                } catch (JSONException e) {
+                    return new JSArray(input);
                 }
             }
         } catch (JSONException e) {
